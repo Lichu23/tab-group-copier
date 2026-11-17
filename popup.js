@@ -49,18 +49,49 @@ function setHeader({ text, back = false, copyAll = false, gear = false }) {
   settingsBtn.hidden = !gear;
 }
 
-/* ---------------- groups list ---------------- */
+// Put already-open tabs that match the rules into their groups (explicit user action).
+async function applyRules() {
+  try {
+    const windows = await chrome.windows.getAll({ windowTypes: ["normal"] });
+    for (const w of windows) await organizeWindow(w.id, { respectIgnored: false });
+  } catch {
+    /* best effort */
+  }
+}
+
+function setDot(dot, color, hollow = false) {
+  const value = COLORS[color] || COLORS.grey;
+  if (hollow) {
+    dot.classList.add("hollow");
+    dot.style.borderColor = value;
+  } else {
+    dot.style.background = value;
+  }
+}
+
+/* ---------------- main view: everything at a glance ---------------- */
 
 async function showGroups() {
   setHeader({ text: "Tab Groups", gear: true });
   content.replaceChildren();
 
   const settings = await getSettings();
+  const [groups, closed] = await Promise.all([chrome.tabGroups.query({}), getClosedGroups()]);
+  const counts = await Promise.all(groups.map((g) => chrome.tabs.query({ groupId: g.id })));
+
   if (!settings.enabled && !settings.bannerDismissed) content.append(buildBanner());
 
-  const groups = await chrome.tabGroups.query({});
-  const closed = await getClosedGroups();
-  if (groups.length === 0) {
+  const toolbar = el("div", "toolbar");
+  const newBtn = el("button", "btn full", "+ New group");
+  newBtn.type = "button";
+  newBtn.addEventListener("click", () => showEditor(null));
+  toolbar.append(newBtn);
+  content.append(toolbar);
+
+  const openTitles = new Set(groups.map((g) => g.title));
+  const dormant = settings.rules.filter((r) => !openTitles.has(r.name));
+
+  if (groups.length === 0 && dormant.length === 0) {
     const empty = el("div", "empty");
     empty.append(el("p", "empty-text", "No tab groups found."));
     const open = el("button", "btn", "Open settings");
@@ -70,27 +101,83 @@ async function showGroups() {
     content.append(empty);
   }
 
-  for (const group of groups) {
-    const tabs = await chrome.tabs.query({ groupId: group.id });
-    const row = el("button", "row");
-    row.type = "button";
-
-    const dot = el("span", "dot");
-    dot.style.background = COLORS[group.color] || COLORS.grey;
-
-    row.append(
-      dot,
-      el("span", "name", group.title || "Untitled group"),
-      el("span", "count", `${tabs.length} ${tabs.length === 1 ? "tab" : "tabs"}`)
+  groups.forEach((group, i) => {
+    const rule = settings.rules.find((r) => r.name === group.title);
+    const n = counts[i].length;
+    content.append(
+      buildGroupRow({
+        name: group.title || "Untitled group",
+        color: group.color,
+        rule,
+        meta: `${n} ${n === 1 ? "tab" : "tabs"}`,
+        onClick: () => showGroup(group.id),
+      })
     );
-    row.addEventListener("click", () => showTabs(group));
-    content.append(row);
+  });
+
+  // Rules whose group isn't open right now stay visible so they can still be edited.
+  for (const rule of dormant) {
+    content.append(
+      buildGroupRow({
+        name: rule.name,
+        color: rule.color,
+        rule,
+        meta: "not open",
+        hollow: true,
+        onClick: () => showEditor(rule.name),
+      })
+    );
   }
 
   if (closed.length > 0) {
-    content.append(el("h2", "section-title closed-title", "Recently closed"));
+    content.append(el("h2", "section-title list-title", "Recently closed"));
     for (const entry of closed) content.append(buildClosedRow(entry));
   }
+}
+
+function ruleSummary(rule) {
+  const extra = rule.domains.length - 1;
+  return `⚡ ${rule.domains[0]}${extra > 0 ? ` +${extra}` : ""}`;
+}
+
+function buildGroupRow({ name, color, rule, meta, hollow = false, onClick }) {
+  const row = el("button", "row");
+  row.type = "button";
+
+  const dot = el("span", "dot");
+  setDot(dot, color, hollow);
+
+  const info = el("div", "tab-info");
+  info.append(el("div", "tab-title", name));
+  if (rule && rule.domains.length > 0) info.append(el("div", "tab-url", ruleSummary(rule)));
+
+  row.append(dot, info, el("span", "count", meta), el("span", "chev", "›"));
+  row.addEventListener("click", onClick);
+  return row;
+}
+
+function buildBanner() {
+  const banner = el("div", "banner");
+  banner.append(el("p", "banner-text", "Auto-group tabs by domain?"));
+  const actions = el("div", "banner-actions");
+
+  const on = el("button", "btn primary", "Turn on");
+  on.type = "button";
+  on.addEventListener("click", async () => {
+    await updateSettings({ enabled: true, bannerDismissed: true });
+    showGroups();
+  });
+
+  const no = el("button", "btn", "No thanks");
+  no.type = "button";
+  no.addEventListener("click", async () => {
+    await updateSettings({ bannerDismissed: true });
+    banner.remove();
+  });
+
+  actions.append(on, no);
+  banner.append(actions);
+  return banner;
 }
 
 function timeAgo(ms) {
@@ -106,7 +193,7 @@ function buildClosedRow(entry) {
   const label = entry.title || "Untitled group";
   const row = el("div", "rule");
   const dot = el("span", "dot");
-  dot.style.background = COLORS[entry.color] || COLORS.grey;
+  setDot(dot, entry.color);
 
   const info = el("div", "tab-info");
   info.append(
@@ -141,65 +228,239 @@ function buildClosedRow(entry) {
   return row;
 }
 
-function buildBanner() {
-  const banner = el("div", "banner");
-  banner.append(el("p", "banner-text", "Auto-group tabs by domain?"));
-  const actions = el("div", "banner-actions");
+/* ---------------- shared form pieces ---------------- */
 
-  const on = el("button", "btn primary", "Turn on");
-  on.type = "button";
-  on.addEventListener("click", async () => {
-    await updateSettings({ enabled: true, bannerDismissed: true });
-    showGroups();
+function buildSwatches(initial, onPick) {
+  const box = el("div", "swatches");
+  box.setAttribute("role", "group");
+  box.setAttribute("aria-label", "Group color");
+  const buttons = COLOR_NAMES.map((c) => {
+    const b = el("button", "swatch");
+    b.type = "button";
+    b.style.background = COLORS[c];
+    b.setAttribute("aria-label", c);
+    b.setAttribute("aria-pressed", String(c === initial));
+    b.addEventListener("click", () => {
+      buttons.forEach((x, i) => x.setAttribute("aria-pressed", String(COLOR_NAMES[i] === c)));
+      onPick(c);
+    });
+    return b;
   });
-
-  const no = el("button", "btn", "No thanks");
-  no.type = "button";
-  no.addEventListener("click", async () => {
-    await updateSettings({ bannerDismissed: true });
-    banner.remove();
-  });
-
-  actions.append(on, no);
-  banner.append(actions);
-  return banner;
+  box.append(...buttons);
+  return box;
 }
 
-/* ---------------- tabs of one group ---------------- */
+// Chip list of sites + an input to add more.
+// onChange(nextList, addedDomains) may be async; return a string to reject the change with that message.
+function buildDomainEditor(initial, onChange) {
+  let list = [...initial];
+  const root = el("div", "domains");
+  root.append(el("span", "field-label", "Auto-add tabs from"));
 
-async function showTabs(group) {
+  const chips = el("div", "chips");
+  const row = el("div", "add-row");
+  const input = el("input", "input domain-input");
+  input.type = "text";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.placeholder = "example.com";
+  input.setAttribute("aria-label", "Add a site");
+  const addBtn = el("button", "btn small", "Add");
+  addBtn.type = "button";
+  row.append(input, addBtn);
+
+  const useCurrent = el("button", "btn small", "Use current tab");
+  useCurrent.type = "button";
+  const preview = el("p", "hint");
+  preview.setAttribute("role", "status");
+  const error = el("p", "error");
+  error.setAttribute("role", "alert");
+
+  function renderChips() {
+    chips.replaceChildren();
+    if (list.length === 0) chips.append(el("span", "hint", "No sites yet."));
+    for (const d of list) {
+      const chip = el("span", "chip");
+      chip.append(el("span", "chip-text", d));
+      const rm = el("button", "chip-x", "✕");
+      rm.type = "button";
+      rm.setAttribute("aria-label", `Remove ${d}`);
+      rm.addEventListener("click", () => commit(list.filter((x) => x !== d), []));
+      chip.append(rm);
+      chips.append(chip);
+    }
+  }
+
+  async function commit(next, added) {
+    const err = await onChange(next, added);
+    if (err) {
+      error.textContent = err;
+      return false;
+    }
+    error.textContent = "";
+    list = next;
+    renderChips();
+    return true;
+  }
+
+  async function tryAdd(raw) {
+    const tokens = raw.split(/[\s,]+/).filter(Boolean);
+    if (tokens.length === 0) return;
+    const bad = tokens.find((t) => !normalizeDomain(t));
+    if (bad) {
+      error.textContent = `"${bad}" isn't a valid domain.`;
+      return;
+    }
+    const added = [...new Set(tokens.map(normalizeDomain))].filter((d) => !list.includes(d));
+    if (added.length === 0 || (await commit([...list, ...added], added))) {
+      input.value = "";
+      preview.textContent = "";
+      error.textContent = "";
+    }
+  }
+
+  input.addEventListener("input", () => {
+    const hosts = [...new Set(input.value.split(/[\s,]+/).filter(Boolean).map(normalizeDomain).filter(Boolean))];
+    preview.textContent = hosts.length ? `Will match ${hosts.join(", ")} and subdomains.` : "";
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      tryAdd(input.value);
+    }
+  });
+  addBtn.addEventListener("click", () => tryAdd(input.value));
+  useCurrent.addEventListener("click", async () => {
+    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const host = getHost(active?.url || "");
+    if (!host) {
+      error.textContent = "The current tab isn't a regular website.";
+      return;
+    }
+    tryAdd(host);
+  });
+
+  renderChips();
+  root.append(chips, row, useCurrent, preview, error);
+  return root;
+}
+
+/* ---------------- group view (an open group) ---------------- */
+
+async function showGroup(groupId) {
+  let group;
+  try {
+    group = await chrome.tabGroups.get(groupId);
+  } catch {
+    return showGroups();
+  }
+  const settings = await getSettings();
+  const rule = settings.rules.find((r) => r.name === group.title);
+
   setHeader({ text: group.title || "Untitled group", back: true, copyAll: true });
   content.replaceChildren();
+  let color = group.color;
 
-  currentTabs = await chrome.tabs.query({ groupId: group.id });
-  if (currentTabs.length === 0) {
-    content.append(el("p", "empty", "This group has no tabs."));
-    copyAllBtn.hidden = true;
-    return;
+  const wrap = el("div", "settings");
+  const error = el("p", "error");
+  error.setAttribute("role", "alert");
+
+  // Name
+  const nameLabel = el("label", "stack");
+  nameLabel.append(el("span", "field-label", "Name"));
+  const name = el("input", "input");
+  name.type = "text";
+  name.maxLength = 40;
+  name.autocomplete = "off";
+  name.value = group.title || "";
+  nameLabel.append(name);
+  name.addEventListener("change", async () => {
+    const next = name.value.trim();
+    if (!next || next === group.title) {
+      name.value = group.title || "";
+      return;
+    }
+    const fresh = await getSettings();
+    if (fresh.rules.some((r) => r.name === next && r.name !== group.title)) {
+      error.textContent = `A rule named "${next}" already exists.`;
+      name.value = group.title || "";
+      return;
+    }
+    await chrome.tabGroups.update(group.id, { title: next });
+    if (rule) await updateSettings({ rules: fresh.rules.map((r) => (r.name === group.title ? { ...r, name: next } : r)) });
+    showGroup(group.id);
+  });
+
+  // Color
+  const swatches = buildSwatches(group.color, async (c) => {
+    color = c;
+    await chrome.tabGroups.update(group.id, { color: c });
+    const fresh = await getSettings();
+    if (fresh.rules.some((r) => r.name === group.title)) {
+      await updateSettings({ rules: fresh.rules.map((r) => (r.name === group.title ? { ...r, color: c } : r)) });
+    }
+  });
+
+  // Sites that auto-join this group (the rule)
+  const domainEditor = buildDomainEditor(rule ? rule.domains : [], async (next, added) => {
+    if (!group.title) return "Name the group first.";
+    const fresh = await getSettings();
+    for (const d of added) {
+      const owner = fresh.rules.find((r) => r.name !== group.title && r.domains.includes(d));
+      if (owner) return `${d} is already used by "${owner.name}".`;
+    }
+    const rules = [...fresh.rules];
+    const idx = rules.findIndex((r) => r.name === group.title);
+    if (next.length === 0) {
+      if (idx >= 0) rules.splice(idx, 1);
+    } else if (idx >= 0) {
+      rules[idx] = { ...rules[idx], domains: next };
+    } else {
+      if (rules.length >= MAX_RULES) return "Rule limit reached.";
+      rules.push({ name: group.title, color, domains: next });
+    }
+    await updateSettings({ rules });
+    await applyRules();
+    await fillTabs();
+  });
+
+  wrap.append(nameLabel, swatches, error, domainEditor);
+
+  const tabsTitle = el("h2", "section-title list-title", "Tabs");
+  const tabsBox = el("div");
+  content.append(wrap, tabsTitle, tabsBox);
+
+  async function fillTabs() {
+    currentTabs = await chrome.tabs.query({ groupId: group.id });
+    copyAllBtn.hidden = currentTabs.length === 0;
+    tabsTitle.textContent = `Tabs (${currentTabs.length})`;
+    const otherGroups = (await chrome.tabGroups.query({})).filter((g) => g.id !== group.id);
+    tabsBox.replaceChildren();
+    if (currentTabs.length === 0) tabsBox.append(el("p", "empty", "This group has no tabs."));
+    for (const tab of currentTabs) tabsBox.append(buildTabItem(tab, group, otherGroups));
   }
+  await fillTabs();
+}
 
-  const otherGroups = (await chrome.tabGroups.query({})).filter((g) => g.id !== group.id);
+function buildTabItem(tab, group, otherGroups) {
+  const url = tab.url || "";
+  const item = el("div", "tab");
+  const info = el("div", "tab-info");
+  const tabTitle = el("div", "tab-title", tab.title || url);
+  tabTitle.title = tab.title || url;
+  const tabUrl = el("div", "tab-url", url);
+  tabUrl.title = url;
+  info.append(tabTitle, tabUrl);
 
-  for (const tab of currentTabs) {
-    const url = tab.url || "";
-    const item = el("div", "tab");
-    const info = el("div", "tab-info");
-    const tabTitle = el("div", "tab-title", tab.title || url);
-    tabTitle.title = tab.title || url;
-    const tabUrl = el("div", "tab-url", url);
-    tabUrl.title = url;
-    info.append(tabTitle, tabUrl);
+  const copyBtn = el("button", "icon-btn", "⧉");
+  copyBtn.type = "button";
+  copyBtn.setAttribute("aria-label", `Copy link: ${tab.title || url}`);
+  copyBtn.addEventListener("click", async () => {
+    flash(copyBtn, "✓", await copyText(url), "⧉");
+  });
 
-    const copyBtn = el("button", "icon-btn", "⧉");
-    copyBtn.type = "button";
-    copyBtn.setAttribute("aria-label", `Copy link: ${tab.title || url}`);
-    copyBtn.addEventListener("click", async () => {
-      flash(copyBtn, "✓", await copyText(url), "⧉");
-    });
-
-    item.append(info, buildMoveSelect(tab, group, otherGroups), copyBtn);
-    content.append(item);
-  }
+  item.append(info, buildMoveSelect(tab, group, otherGroups), copyBtn);
+  return item;
 }
 
 // Native <select>: keyboard and screen-reader friendly, no custom menu needed.
@@ -228,12 +489,7 @@ function buildMoveSelect(tab, group, otherGroups) {
       select.value = "";
       return;
     }
-    // The source group disappears when its last tab leaves.
-    try {
-      showTabs(await chrome.tabGroups.get(group.id));
-    } catch {
-      showGroups();
-    }
+    showGroup(group.id); // falls back to the groups list when the group is now empty
   });
   return select;
 }
@@ -243,10 +499,87 @@ copyAllBtn.addEventListener("click", async () => {
   flash(copyAllBtn, "Copied ✓", await copyText(text), "Copy all");
 });
 
-/* ---------------- settings ---------------- */
+/* ---------------- rule editor (new group, or a rule whose group isn't open) ---------------- */
 
-// editing: null (just the list), "new" (add form) or a rule index (edit form)
-async function showSettings(editing = null) {
+async function showEditor(ruleName) {
+  const settings = await getSettings();
+  const existing = ruleName === null ? null : settings.rules.find((r) => r.name === ruleName);
+  if (ruleName !== null && !existing) return showGroups();
+
+  setHeader({ text: existing ? existing.name : "New group", back: true });
+  content.replaceChildren();
+
+  let color = existing ? existing.color : "blue";
+  let domains = existing ? [...existing.domains] : [];
+
+  const wrap = el("div", "settings");
+  const nameLabel = el("label", "stack");
+  nameLabel.append(el("span", "field-label", "Name"));
+  const name = el("input", "input");
+  name.type = "text";
+  name.maxLength = 40;
+  name.autocomplete = "off";
+  name.placeholder = "Work";
+  name.value = existing ? existing.name : "";
+  nameLabel.append(name);
+
+  const swatches = buildSwatches(color, (c) => (color = c));
+  const domainEditor = buildDomainEditor(domains, (next) => {
+    domains = next;
+  });
+  const error = el("p", "error");
+  error.setAttribute("role", "alert");
+
+  const actions = el("div", "banner-actions editor-actions");
+  const save = el("button", "btn primary", "Save");
+  save.type = "button";
+  const cancel = el("button", "btn", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", showGroups);
+  actions.append(save, cancel);
+
+  if (existing) {
+    const del = el("button", "btn danger", "Delete");
+    del.type = "button";
+    del.addEventListener("click", async () => {
+      const fresh = await getSettings();
+      await updateSettings({ rules: fresh.rules.filter((r) => r.name !== existing.name) });
+      showGroups();
+    });
+    actions.append(del);
+  }
+
+  save.addEventListener("click", async () => {
+    const groupName = name.value.trim();
+    if (!groupName) return (error.textContent = "Give the group a name."), name.focus();
+    if (domains.length === 0) return (error.textContent = "Add at least one site.");
+
+    const fresh = await getSettings();
+    const self = existing ? existing.name : null;
+    if (fresh.rules.some((r) => r.name === groupName && r.name !== self)) {
+      return (error.textContent = `A rule named "${groupName}" already exists.`);
+    }
+    for (const d of domains) {
+      const owner = fresh.rules.find((r) => r.name !== self && r.domains.includes(d));
+      if (owner) return (error.textContent = `${d} is already used by "${owner.name}".`);
+    }
+    if (!existing && fresh.rules.length >= MAX_RULES) return (error.textContent = "Rule limit reached.");
+
+    const entry = { name: groupName, color, domains };
+    const rules = existing ? fresh.rules.map((r) => (r.name === self ? entry : r)) : [...fresh.rules, entry];
+    await updateSettings({ rules });
+    await applyRules();
+    showGroups();
+  });
+
+  wrap.append(nameLabel, swatches, domainEditor, error, actions);
+  content.append(wrap);
+  queueMicrotask(() => (existing ? domainEditor.querySelector(".domain-input") : name).focus());
+}
+
+/* ---------------- settings (global only) ---------------- */
+
+async function showSettings() {
   setHeader({ text: "Settings", back: true });
   content.replaceChildren();
   const settings = await getSettings();
@@ -261,7 +594,7 @@ async function showSettings(editing = null) {
   toggle.addEventListener("change", () => updateSettings({ enabled: toggle.checked }));
   const info = el("span", "info", "ⓘ");
   const infoText =
-    "Groups tabs from the same site once you have this many ungrouped ones. Custom rules always apply, even when this is off. Tabs you ungroup by hand are left alone.";
+    "Groups tabs from the same site once you have this many ungrouped ones. Sites you added to a group always join it, even when this is off. Tabs you ungroup by hand are left alone.";
   info.title = infoText;
   info.tabIndex = 0;
   info.setAttribute("role", "img");
@@ -282,7 +615,6 @@ async function showSettings(editing = null) {
   select.addEventListener("change", () => updateSettings({ threshold: Number(select.value) }));
   thresholdRow.append(el("span", "field-label", "Group when I have"), select);
 
-  // "Do it now" action lives with the auto-group settings so it is never pushed down by the rules list.
   const status = el("p", "hint");
   status.setAttribute("role", "status");
   const now = el("button", "btn primary full", "Group my open tabs now");
@@ -303,167 +635,7 @@ async function showSettings(editing = null) {
   });
 
   wrap.append(el("h2", "section-title", "Auto-group"), toggleRow, thresholdRow, now, status);
-
-  // Custom rules
-  wrap.append(el("h2", "section-title", "Custom rules"));
-  if (settings.rules.length === 0 && editing === null) {
-    wrap.append(el("p", "hint", "No rules yet. Example: github.com, gitlab.com → Dev."));
-  }
-
-  settings.rules.forEach((rule, index) => {
-    if (editing === index) return;
-    wrap.append(buildRuleRow(rule, index, settings));
-  });
-
-  if (editing !== null) {
-    wrap.append(buildRuleForm(editing === "new" ? null : settings.rules[editing], editing, settings));
-  } else if (settings.rules.length < MAX_RULES) {
-    const add = el("button", "btn", "+ Add rule");
-    add.type = "button";
-    add.addEventListener("click", () => showSettings("new"));
-    wrap.append(add);
-  }
-
   content.append(wrap);
-}
-
-function buildRuleRow(rule, index, settings) {
-  const row = el("div", "rule");
-  const dot = el("span", "dot");
-  dot.style.background = COLORS[rule.color] || COLORS.grey;
-
-  const info = el("div", "tab-info");
-  info.append(el("div", "tab-title", rule.name), el("div", "tab-url", rule.domains.join(", ")));
-
-  const edit = el("button", "btn small", "Edit");
-  edit.type = "button";
-  edit.setAttribute("aria-label", `Edit rule ${rule.name}`);
-  edit.addEventListener("click", () => showSettings(index));
-
-  const del = el("button", "btn small", "Delete");
-  del.type = "button";
-  del.setAttribute("aria-label", `Delete rule ${rule.name}`);
-  del.addEventListener("click", async () => {
-    await updateSettings({ rules: settings.rules.filter((_, i) => i !== index) });
-    showSettings();
-  });
-
-  row.append(dot, info, edit, del);
-  return row;
-}
-
-function buildRuleForm(rule, editing, settings) {
-  const form = el("form", "rule-form");
-  form.noValidate = true;
-  let color = rule ? rule.color : "blue";
-
-  const domainsLabel = el("label", "stack");
-  domainsLabel.append(el("span", "field-label", "Domains (comma separated)"));
-  const domains = el("input", "input");
-  domains.type = "text";
-  domains.name = "domains";
-  domains.autocomplete = "off";
-  domains.spellcheck = false;
-  domains.placeholder = "github.com, gitlab.com…";
-  domains.value = rule ? rule.domains.join(", ") : "";
-  domainsLabel.append(domains);
-
-  // Live preview of what the rule will actually match (paths are dropped).
-  const preview = el("p", "hint");
-  preview.setAttribute("role", "status");
-  const updatePreview = () => {
-    const tokens = domains.value.split(/[\s,]+/).filter(Boolean);
-    if (tokens.length === 0) return (preview.textContent = "");
-    const bad = tokens.find((t) => !normalizeDomain(t));
-    if (bad) return (preview.textContent = `"${bad}" isn't a valid domain.`);
-    const list = [...new Set(tokens.map(normalizeDomain))];
-    const droppedPath = tokens.some((t) => /^[a-z][a-z0-9+.-]*:\/\/|[/?#]/i.test(t));
-    preview.textContent =
-      `Matches every page on: ${list.join(", ")} (and subdomains).` + (droppedPath ? " Paths are ignored." : "");
-  };
-  domains.addEventListener("input", updatePreview);
-
-  const useCurrent = el("button", "btn small", "Use current tab");
-  useCurrent.type = "button";
-  useCurrent.addEventListener("click", async () => {
-    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    const host = getHost(active?.url || "");
-    if (!host) {
-      error.textContent = "The current tab isn't a regular website.";
-      return;
-    }
-    error.textContent = "";
-    const existing = domains.value.split(/[\s,]+/).filter(Boolean).map(normalizeDomain);
-    if (!existing.includes(host)) domains.value = [...domains.value.split(/[\s,]+/).filter(Boolean), host].join(", ");
-    updatePreview();
-    domains.focus();
-  });
-  domainsLabel.append(preview);
-
-  const nameLabel = el("label", "stack");
-  nameLabel.append(el("span", "field-label", "Group name"));
-  const name = el("input", "input");
-  name.type = "text";
-  name.name = "name";
-  name.autocomplete = "off";
-  name.maxLength = 40;
-  name.placeholder = "Dev…";
-  name.value = rule ? rule.name : "";
-  nameLabel.append(name);
-
-  const swatches = el("div", "swatches");
-  swatches.setAttribute("role", "group");
-  swatches.setAttribute("aria-label", "Group color");
-  const buttons = COLOR_NAMES.map((c) => {
-    const b = el("button", "swatch");
-    b.type = "button";
-    b.style.background = COLORS[c];
-    b.setAttribute("aria-label", c);
-    b.setAttribute("aria-pressed", String(c === color));
-    b.addEventListener("click", () => {
-      color = c;
-      buttons.forEach((x, i) => x.setAttribute("aria-pressed", String(COLOR_NAMES[i] === c)));
-    });
-    return b;
-  });
-  swatches.append(...buttons);
-
-  const error = el("p", "error");
-  error.setAttribute("role", "alert");
-
-  const actions = el("div", "banner-actions");
-  const save = el("button", "btn primary", "Save rule");
-  save.type = "submit";
-  const cancel = el("button", "btn", "Cancel");
-  cancel.type = "button";
-  cancel.addEventListener("click", () => showSettings());
-  actions.append(save, cancel);
-
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const tokens = domains.value.split(/[\s,]+/).filter(Boolean);
-    const normalized = tokens.map(normalizeDomain);
-    const groupName = name.value.trim();
-
-    if (tokens.length === 0) return (error.textContent = "Add at least one domain."), domains.focus();
-    if (normalized.some((d) => !d)) {
-      error.textContent = `"${tokens[normalized.indexOf("")]}" isn't a valid domain.`;
-      return domains.focus();
-    }
-    if (!groupName) return (error.textContent = "Give the group a name."), name.focus();
-
-    const next = { name: groupName, color, domains: [...new Set(normalized)] };
-    const rules = [...settings.rules];
-    if (editing === "new") rules.push(next);
-    else rules[editing] = next;
-    await updateSettings({ rules });
-    showSettings();
-  });
-
-  form.append(domainsLabel, useCurrent, nameLabel, swatches, error, actions);
-  updatePreview();
-  queueMicrotask(() => domains.focus());
-  return form;
 }
 
 backBtn.addEventListener("click", showGroups);

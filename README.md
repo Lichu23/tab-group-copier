@@ -11,8 +11,9 @@ Chrome's native tab group menu can't be extended by extensions, so this adds its
 - Copy icon next to each tab copies that tab's URL.
 - **Copy all** copies every URL in the group, one per line.
 - Auto-group by domain: once you have N ungrouped tabs from the same site (default 3), they are grouped as `github.com`. Off by default, turn it on from the banner or the settings (gear icon).
-- Custom rules: map domains to a named, colored group (e.g. `github.com, gitlab.com` → "Dev"). Rules group immediately and also match subdomains.
-- Rules always apply, even when auto-group by domain is off. The rule form previews what a rule matches (paths are ignored) and has a "Use current tab" button.
+- Everything in one list: open groups, their auto-add sites (⚡) and groups whose rule has no open tabs. Click a group to rename it, change its color, edit its sites, copy links or move tabs.
+- Auto-add sites: add sites to a group (e.g. `github.com`, `gitlab.com` → "Dev") and matching tabs join it immediately. Subdomains match too, paths are ignored, and it works even when auto-group by domain is off. "Use current tab" adds the active tab's site.
+- "+ New group" creates a named, colored group with its sites before any tab is open.
 - Move any tab to another group (or out of its group) from the group's tab list.
 - Recently closed groups can be reopened from the popup.
 - "Group my open tabs now" applies the rules and threshold to everything already open.
