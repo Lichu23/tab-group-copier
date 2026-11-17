@@ -254,8 +254,9 @@ async function showSettings(editing = null) {
 
   // Master toggle
   const toggleRow = el("label", "field-row");
-  const toggle = el("input");
+  const toggle = el("input", "switch");
   toggle.type = "checkbox";
+  toggle.setAttribute("role", "switch");
   toggle.checked = settings.enabled;
   toggle.addEventListener("change", () => updateSettings({ enabled: toggle.checked }));
   const info = el("span", "info", "ⓘ");
@@ -281,7 +282,27 @@ async function showSettings(editing = null) {
   select.addEventListener("change", () => updateSettings({ threshold: Number(select.value) }));
   thresholdRow.append(el("span", "field-label", "Group when I have"), select);
 
-  wrap.append(toggleRow, thresholdRow);
+  // "Do it now" action lives with the auto-group settings so it is never pushed down by the rules list.
+  const status = el("p", "hint");
+  status.setAttribute("role", "status");
+  const now = el("button", "btn primary full", "Group my open tabs now");
+  now.type = "button";
+  now.addEventListener("click", async () => {
+    now.disabled = true;
+    try {
+      const windows = await chrome.windows.getAll({ windowTypes: ["normal"] });
+      let moved = 0;
+      for (const w of windows) {
+        moved += await organizeWindow(w.id, { respectIgnored: false, includeDomains: true });
+      }
+      status.textContent = moved > 0 ? `Grouped ${moved} ${moved === 1 ? "tab" : "tabs"}.` : "Nothing to group.";
+    } catch {
+      status.textContent = "Could not group tabs.";
+    }
+    now.disabled = false;
+  });
+
+  wrap.append(el("h2", "section-title", "Auto-group"), toggleRow, thresholdRow, now, status);
 
   // Custom rules
   wrap.append(el("h2", "section-title", "Custom rules"));
@@ -302,28 +323,6 @@ async function showSettings(editing = null) {
     add.addEventListener("click", () => showSettings("new"));
     wrap.append(add);
   }
-
-  // Group now
-  wrap.append(el("h2", "section-title", "Open tabs"));
-  const status = el("p", "hint");
-  status.setAttribute("role", "status");
-  const now = el("button", "btn", "Group my open tabs now");
-  now.type = "button";
-  now.addEventListener("click", async () => {
-    now.disabled = true;
-    try {
-      const windows = await chrome.windows.getAll({ windowTypes: ["normal"] });
-      let moved = 0;
-      for (const w of windows) {
-        moved += await organizeWindow(w.id, { respectIgnored: false, includeDomains: true });
-      }
-      status.textContent = moved > 0 ? `Grouped ${moved} ${moved === 1 ? "tab" : "tabs"}.` : "Nothing to group.";
-    } catch {
-      status.textContent = "Could not group tabs.";
-    }
-    now.disabled = false;
-  });
-  wrap.append(now, status);
 
   content.append(wrap);
 }
