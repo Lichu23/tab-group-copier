@@ -258,7 +258,16 @@ async function showSettings(editing = null) {
   toggle.type = "checkbox";
   toggle.checked = settings.enabled;
   toggle.addEventListener("change", () => updateSettings({ enabled: toggle.checked }));
-  toggleRow.append(el("span", "field-label", "Auto-group by domain"), toggle);
+  const info = el("span", "info", "ⓘ");
+  const infoText =
+    "Groups tabs from the same site once you have this many ungrouped ones. Custom rules always apply, even when this is off. Tabs you ungroup by hand are left alone.";
+  info.title = infoText;
+  info.tabIndex = 0;
+  info.setAttribute("role", "img");
+  info.setAttribute("aria-label", infoText);
+  const toggleLabel = el("span", "field-label", "Auto-group by domain ");
+  toggleLabel.append(info);
+  toggleRow.append(toggleLabel, toggle);
 
   // Threshold
   const thresholdRow = el("label", "field-row");
@@ -272,15 +281,7 @@ async function showSettings(editing = null) {
   select.addEventListener("change", () => updateSettings({ threshold: Number(select.value) }));
   thresholdRow.append(el("span", "field-label", "Group when I have"), select);
 
-  wrap.append(
-    toggleRow,
-    thresholdRow,
-    el(
-      "p",
-      "hint",
-      "Tabs from the same site are grouped once you have this many ungrouped ones. Custom rules below always apply, even when this is off. Tabs you ungroup by hand are left alone."
-    )
-  );
+  wrap.append(toggleRow, thresholdRow);
 
   // Custom rules
   wrap.append(el("h2", "section-title", "Custom rules"));
