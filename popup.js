@@ -61,7 +61,13 @@ async function showGroups() {
   const groups = await chrome.tabGroups.query({});
   const closed = await getClosedGroups();
   if (groups.length === 0) {
-    content.append(el("p", "empty", "No tab groups found."));
+    const empty = el("div", "empty");
+    empty.append(el("p", "empty-text", "No tab groups found."));
+    const open = el("button", "btn", "Open settings");
+    open.type = "button";
+    open.addEventListener("click", () => showSettings());
+    empty.append(open);
+    content.append(empty);
   }
 
   for (const group of groups) {
