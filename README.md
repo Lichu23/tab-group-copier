@@ -10,6 +10,13 @@ Chrome's native tab group menu can't be extended by extensions, so this adds its
 - Click a group to see its tabs (title and URL).
 - Copy icon next to each tab copies that tab's URL.
 - **Copy all** copies every URL in the group, one per line.
+- Auto-group by domain: once you have N ungrouped tabs from the same site (default 3), they are grouped as `github.com`. Off by default, turn it on from the banner or the settings (gear icon).
+- Custom rules: map domains to a named, colored group (e.g. `github.com, gitlab.com` → "Dev"). Rules group immediately and also match subdomains.
+- Rules always apply, even when auto-group by domain is off. The rule form previews what a rule matches (paths are ignored) and has a "Use current tab" button.
+- Move any tab to another group (or out of its group) from the group's tab list.
+- Recently closed groups can be reopened from the popup.
+- "Group my open tabs now" applies the rules and threshold to everything already open.
+- Tabs you ungroup by hand are left alone until they are closed.
 - Light and dark theme, follows your system setting.
 
 ## Install (developer mode)
@@ -32,7 +39,8 @@ Chrome's native tab group menu can't be extended by extensions, so this adds its
 | Permission  | Why                                              |
 | ----------- | ------------------------------------------------ |
 | `tabs`      | Read the title and URL of the tabs in a group.   |
-| `tabGroups` | List your tab groups and read their name/color.  |
+| `tabGroups` | List, create and name your tab groups.           |
+| `storage`   | Save your settings and custom rules locally.     |
 
 The extension doesn't send any data anywhere. Everything stays in your browser.
 
@@ -40,9 +48,11 @@ The extension doesn't send any data anywhere. Everything stays in your browser.
 
 ```
 manifest.json   Extension config (Manifest V3)
+background.js   Service worker: auto-groups tabs as they load
+lib.js          Shared settings, domain matching and grouping logic
 popup.html      Popup markup
 popup.css       Popup styles
-popup.js        Groups list, tabs list and copy logic
+popup.js        Groups list, tabs list, copy logic and settings screen
 ```
 
 ## License

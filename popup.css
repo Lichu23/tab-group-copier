@@ -129,6 +129,79 @@ main { overflow-y: auto; }
 
 .empty { padding: 24px 12px; text-align: center; color: var(--muted); }
 
+.banner {
+  margin: 10px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--hover);
+}
+.banner-text { margin: 0 0 8px; }
+.banner-actions { display: flex; gap: 8px; }
+
+.settings { padding: 8px 12px 14px; }
+.section-title {
+  margin: 16px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.hint { margin: 6px 0; font-size: 12px; color: var(--muted); }
+
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+.field-label { font-size: 13px; }
+.stack { display: block; margin-bottom: 10px; }
+.stack .field-label { display: block; margin-bottom: 4px; }
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+
+.input {
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+select.input { width: auto; }
+.move-select { flex: none; width: 92px; padding: 3px 4px; font-size: 12px; }
+.rule-form .btn.small { margin: -2px 0 10px; }
+.input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.rule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.btn.small { padding: 2px 8px; font-size: 12px; }
+main > .rule { padding: 8px 12px; }
+.closed-title { padding: 0 12px; }
+.btn:disabled { opacity: 0.6; cursor: default; }
+
+.rule-form { margin: 8px 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+.swatch[aria-pressed="true"] { border-color: var(--fg); }
+.swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.error { min-height: 1em; margin: 0 0 8px; font-size: 12px; color: #d93025; }
+@media (prefers-color-scheme: dark) { .error { color: #f28b82; } }
+
 @media (prefers-reduced-motion: no-preference) {
   .btn, .row, .icon-btn { transition: background-color 0.15s; }
 }

@@ -1,9 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Tab Group Copier",
-  "version": "1.0.0",
-  "description": "Browse your tab groups and copy tab links, one at a time or all at once.",
-  "permissions": ["tabs", "tabGroups"],
+  "version": "1.1.0",
+  "description": "Browse your tab groups, copy tab links, and auto-group tabs by domain.",
+  "permissions": ["tabs", "tabGroups", "storage"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
   "action": {
     "default_title": "Tab Group Copier",
     "default_popup": "popup.html"
