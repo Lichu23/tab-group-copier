@@ -451,14 +451,15 @@ async function showGroup(groupId) {
 // Textarea where a list of links is pasted, plus a preview list of what was understood.
 // getExisting() -> Set of URLs already present (skipped). onChange(count) fires after every refresh.
 // Returns { root, getLinks(), reset(), setStatus(text), focus() }.
-function buildLinksPicker({ getExisting = () => new Set(), onChange = () => {} } = {}) {
+// onSubmit (optional): called on Enter; Shift+Enter inserts a new line.
+function buildLinksPicker({ getExisting = () => new Set(), onChange = () => {}, onSubmit } = {}) {
   const root = el("div", "links-picker");
 
   const input = el("textarea", "input links-input");
-  input.rows = 4;
+  input.rows = 2;
   input.autocomplete = "off";
   input.spellcheck = false;
-  input.placeholder = "Paste links, one per line";
+  input.placeholder = "Paste one link or many (one per line)";
   input.setAttribute("aria-label", "Links to add");
 
   const status = el("p", "hint");
@@ -521,6 +522,14 @@ function buildLinksPicker({ getExisting = () => new Set(), onChange = () => {} }
   }
 
   input.addEventListener("input", refresh);
+  if (onSubmit) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        onSubmit();
+      }
+    });
+  }
   root.append(input, status, list);
   refresh();
 
@@ -538,10 +547,10 @@ function buildLinksPicker({ getExisting = () => new Set(), onChange = () => {} }
   };
 }
 
-// "Add links" section of an open group: paste many links, each opens in the background and joins it.
+// "Add links" field of an open group: paste one or many links, each opens in the background and joins it.
 function buildLinksAdder(group, onAdded) {
-  const details = el("details", "links-adder");
-  details.append(el("summary", "", "Add links"));
+  const box = el("div", "links-adder");
+  box.append(el("span", "field-label", "Add links"));
 
   const addBtn = el("button", "btn primary", "Add links to group");
   addBtn.type = "button";
@@ -553,11 +562,12 @@ function buildLinksAdder(group, onAdded) {
       addBtn.textContent = n > 0 ? `Add ${n} ${n === 1 ? "link" : "links"} to group` : "Add links to group";
       addBtn.disabled = n === 0;
     },
+    onSubmit: () => addBtn.click(),
   });
 
   addBtn.addEventListener("click", async () => {
     const urls = picker.getLinks();
-    if (urls.length === 0) return;
+    if (urls.length === 0 || addBtn.disabled) return;
     addBtn.disabled = true;
     let message;
     try {
@@ -571,8 +581,8 @@ function buildLinksAdder(group, onAdded) {
     picker.setStatus(message);
   });
 
-  details.append(picker.root, addBtn);
-  return details;
+  box.append(picker.root, addBtn);
+  return box;
 }
 
 function buildTabItem(tab, group, otherGroups) {
@@ -661,9 +671,8 @@ async function showEditor(ruleName) {
     domains = next;
   });
   // Links pasted here open as tabs in this group when you press Save.
-  const linksBox = el("details", "links-adder");
-  linksBox.open = true;
-  linksBox.append(el("summary", "", "Links to open in this group"));
+  const linksBox = el("div", "links-adder");
+  linksBox.append(el("span", "field-label", "Links to open in this group"));
   const picker = buildLinksPicker();
   linksBox.append(picker.root);
 
