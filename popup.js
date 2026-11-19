@@ -5,6 +5,10 @@ import {
   updateSettings,
   normalizeDomain,
   getHost,
+  parseLinks,
+  addLinksToGroup,
+  createGroupWithLinks,
+  MAX_LINKS,
   organizeWindow,
   getClosedGroups,
   removeClosedGroup,
@@ -424,7 +428,9 @@ async function showGroup(groupId) {
     await fillTabs();
   });
 
-  wrap.append(nameLabel, swatches, error, domainEditor);
+  const linksAdder = buildLinksAdder(group, () => fillTabs());
+
+  wrap.append(nameLabel, swatches, error, domainEditor, linksAdder);
 
   const tabsTitle = el("h2", "section-title list-title", "Tabs");
   const tabsBox = el("div");
@@ -442,8 +448,135 @@ async function showGroup(groupId) {
   await fillTabs();
 }
 
+// Textarea where a list of links is pasted, plus a preview list of what was understood.
+// getExisting() -> Set of URLs already present (skipped). onChange(count) fires after every refresh.
+// Returns { root, getLinks(), reset(), setStatus(text), focus() }.
+function buildLinksPicker({ getExisting = () => new Set(), onChange = () => {} } = {}) {
+  const root = el("div", "links-picker");
+
+  const input = el("textarea", "input links-input");
+  input.rows = 4;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.placeholder = "Paste links, one per line";
+  input.setAttribute("aria-label", "Links to add");
+
+  const status = el("p", "hint");
+  status.setAttribute("role", "status");
+  const list = el("ul", "links-list");
+  list.hidden = true;
+
+  let links = [];
+
+  function analyze() {
+    const existing = getExisting();
+    const { items } = parseLinks(input.value);
+    let accepted = 0;
+    return items.map((item) => {
+      if (item.status === "invalid") return { ...item, label: "not a link" };
+      if (item.status === "repeated") return { ...item, label: "repeated" };
+      if (existing.has(item.url)) return { ...item, status: "skip", label: "already in group" };
+      if (accepted >= MAX_LINKS) return { ...item, status: "skip", label: `over the ${MAX_LINKS} limit` };
+      accepted++;
+      return item;
+    });
+  }
+
+  function removeAt(index, items) {
+    input.value = items
+      .filter((_, i) => i !== index)
+      .map((i) => i.raw)
+      .join("\n");
+    refresh();
+    input.focus();
+  }
+
+  function refresh() {
+    const items = analyze();
+    links = items.filter((i) => i.status === "ok").map((i) => i.url);
+
+    list.replaceChildren();
+    list.hidden = items.length === 0;
+    items.forEach((item, index) => {
+      const ok = item.status === "ok";
+      const row = el("li", ok ? "link-row" : "link-row skipped");
+      row.append(el("span", "link-mark", ok ? "✓" : "⚠"));
+      const text = el("span", "link-text", ok ? item.url : item.raw);
+      text.title = ok ? item.url : item.raw;
+      row.append(text);
+      if (!ok) row.append(el("span", "link-reason", item.label));
+      const rm = el("button", "chip-x", "✕");
+      rm.type = "button";
+      rm.setAttribute("aria-label", `Remove ${item.raw}`);
+      rm.addEventListener("click", () => removeAt(index, items));
+      row.append(rm);
+      list.append(row);
+    });
+
+    const skipped = items.length - links.length;
+    status.textContent = items.length
+      ? `${links.length} ${links.length === 1 ? "link" : "links"} ready${skipped ? ` · ${skipped} skipped` : ""}`
+      : "";
+    onChange(links.length);
+  }
+
+  input.addEventListener("input", refresh);
+  root.append(input, status, list);
+  refresh();
+
+  return {
+    root,
+    getLinks: () => links,
+    reset() {
+      input.value = "";
+      refresh();
+    },
+    setStatus(text) {
+      status.textContent = text;
+    },
+    focus: () => input.focus(),
+  };
+}
+
+// "Add links" section of an open group: paste many links, each opens in the background and joins it.
+function buildLinksAdder(group, onAdded) {
+  const details = el("details", "links-adder");
+  details.append(el("summary", "", "Add links"));
+
+  const addBtn = el("button", "btn primary", "Add links to group");
+  addBtn.type = "button";
+  addBtn.disabled = true;
+
+  const picker = buildLinksPicker({
+    getExisting: () => new Set(currentTabs.map((t) => t.url || t.pendingUrl).filter(Boolean)),
+    onChange(n) {
+      addBtn.textContent = n > 0 ? `Add ${n} ${n === 1 ? "link" : "links"} to group` : "Add links to group";
+      addBtn.disabled = n === 0;
+    },
+  });
+
+  addBtn.addEventListener("click", async () => {
+    const urls = picker.getLinks();
+    if (urls.length === 0) return;
+    addBtn.disabled = true;
+    let message;
+    try {
+      const added = await addLinksToGroup(group.id, group.windowId, urls);
+      message = `Added ${added} ${added === 1 ? "link" : "links"}.`;
+      picker.reset();
+    } catch {
+      message = "Could not add all links.";
+    }
+    await onAdded();
+    picker.setStatus(message);
+  });
+
+  details.append(picker.root, addBtn);
+  return details;
+}
+
 function buildTabItem(tab, group, otherGroups) {
-  const url = tab.url || "";
+  const url = tab.url || tab.pendingUrl || "";
   const item = el("div", "tab");
   const info = el("div", "tab-info");
   const tabTitle = el("div", "tab-title", tab.title || url);
@@ -495,7 +628,7 @@ function buildMoveSelect(tab, group, otherGroups) {
 }
 
 copyAllBtn.addEventListener("click", async () => {
-  const text = currentTabs.map((t) => t.url).filter(Boolean).join("\n");
+  const text = currentTabs.map((t) => t.url || t.pendingUrl).filter(Boolean).join("\n");
   flash(copyAllBtn, "Copied ✓", await copyText(text), "Copy all");
 });
 
@@ -527,6 +660,13 @@ async function showEditor(ruleName) {
   const domainEditor = buildDomainEditor(domains, (next) => {
     domains = next;
   });
+  // Links pasted here open as tabs in this group when you press Save.
+  const linksBox = el("details", "links-adder");
+  linksBox.open = true;
+  linksBox.append(el("summary", "", "Links to open in this group"));
+  const picker = buildLinksPicker();
+  linksBox.append(picker.root);
+
   const error = el("p", "error");
   error.setAttribute("role", "alert");
 
@@ -552,7 +692,8 @@ async function showEditor(ruleName) {
   save.addEventListener("click", async () => {
     const groupName = name.value.trim();
     if (!groupName) return (error.textContent = "Give the group a name."), name.focus();
-    if (domains.length === 0) return (error.textContent = "Add at least one site.");
+    const links = picker.getLinks();
+    if (domains.length === 0 && links.length === 0) return (error.textContent = "Add at least one site or link.");
 
     const fresh = await getSettings();
     const self = existing ? existing.name : null;
@@ -563,16 +704,36 @@ async function showEditor(ruleName) {
       const owner = fresh.rules.find((r) => r.name !== self && r.domains.includes(d));
       if (owner) return (error.textContent = `${d} is already used by "${owner.name}".`);
     }
-    if (!existing && fresh.rules.length >= MAX_RULES) return (error.textContent = "Rule limit reached.");
+    if (!existing && domains.length > 0 && fresh.rules.length >= MAX_RULES) {
+      return (error.textContent = "Rule limit reached.");
+    }
 
-    const entry = { name: groupName, color, domains };
-    const rules = existing ? fresh.rules.map((r) => (r.name === self ? entry : r)) : [...fresh.rules, entry];
-    await updateSettings({ rules });
+    // Sites make a rule; a group made only from pasted links needs none.
+    let rules = fresh.rules;
+    if (domains.length > 0) {
+      const entry = { name: groupName, color, domains };
+      rules = existing ? rules.map((r) => (r.name === self ? entry : r)) : [...rules, entry];
+    } else if (existing) {
+      rules = rules.filter((r) => r.name !== self);
+    }
+
+    save.disabled = true;
+    error.textContent = "";
+    try {
+      await updateSettings({ rules });
+      if (links.length > 0) {
+        const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+        await createGroupWithLinks({ title: groupName, color, urls: links, windowId: win.id });
+      }
+    } catch {
+      save.disabled = false;
+      return (error.textContent = "Could not open all the links.");
+    }
     await applyRules();
     showGroups();
   });
 
-  wrap.append(nameLabel, swatches, domainEditor, error, actions);
+  wrap.append(nameLabel, swatches, domainEditor, linksBox, error, actions);
   content.append(wrap);
   queueMicrotask(() => (existing ? domainEditor.querySelector(".domain-input") : name).focus());
 }

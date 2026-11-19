@@ -136,6 +136,76 @@ export function getHost(url) {
   }
 }
 
+export const MAX_LINKS = 50;
+
+// Turns pasted text into safe http(s) URLs.
+// Tokens are separated by whitespace or commas; a missing scheme defaults to https://.
+// items: one entry per token, in order -> { raw, status: "ok" | "invalid" | "repeated", url? }
+// valid: the unique safe URLs (status "ok").
+export function parseLinks(text) {
+  const items = [];
+  const seen = new Set();
+  for (const raw of String(text).split(/[\s,]+/).filter(Boolean)) {
+    let url;
+    try {
+      url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
+    } catch {
+      items.push({ raw, status: "invalid" });
+      continue;
+    }
+    const host = url.hostname;
+    const ok =
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      !url.username &&
+      !url.password && // rejects things like "mailto:a@b.com" that parse as credentials
+      (host.includes(".") || host === "localhost");
+    if (!ok) items.push({ raw, status: "invalid" });
+    else if (seen.has(url.href)) items.push({ raw, status: "repeated", url: url.href });
+    else {
+      seen.add(url.href);
+      items.push({ raw, status: "ok", url: url.href });
+    }
+  }
+  return { items, valid: items.filter((i) => i.status === "ok").map((i) => i.url) };
+}
+
+// Opens each URL in the background. Stops at the first failure but keeps the tabs already opened.
+async function openTabs(windowId, urls) {
+  const created = [];
+  let failure = null;
+  try {
+    for (const url of urls) created.push(await chrome.tabs.create({ windowId, url, active: false }));
+  } catch (err) {
+    failure = err;
+  }
+  // The user picked these links explicitly: keep auto-grouping rules from moving the tabs elsewhere.
+  for (const t of created) await addIgnored(t.id);
+  return { tabIds: created.map((t) => t.id), failure };
+}
+
+// Opens the URLs and puts the new tabs in an existing group. Returns how many were added.
+export async function addLinksToGroup(groupId, windowId, urls) {
+  const { tabIds, failure } = await openTabs(windowId, urls);
+  if (tabIds.length > 0) await chrome.tabs.group({ groupId, tabIds });
+  if (failure) throw failure;
+  return tabIds.length;
+}
+
+// Opens the URLs in a group with this title: the open one in that window if there is one, else a new one.
+export async function createGroupWithLinks({ title, color, urls, windowId }) {
+  const groups = await chrome.tabGroups.query({ windowId });
+  const existing = groups.find((g) => g.title === title);
+  if (existing) return addLinksToGroup(existing.id, windowId, urls);
+
+  const { tabIds, failure } = await openTabs(windowId, urls);
+  if (tabIds.length > 0) {
+    const groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
+    await chrome.tabGroups.update(groupId, { title, color });
+  }
+  if (failure) throw failure;
+  return tabIds.length;
+}
+
 // A rule for "github.com" also matches "gist.github.com".
 export function findRule(host, rules) {
   return rules.find((r) => r.domains.some((d) => host === d || host.endsWith("." + d)));
